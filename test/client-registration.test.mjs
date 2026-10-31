@@ -32,6 +32,7 @@ test('declared client dependencies make the UI services available for registrati
     get: name => name === 'slots' && pkg.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-renderer') ? slots
       : name === 'sessions' && pkg.dsh.client.inject.includes('@deepseek-ai/dsh-api-session-controller') ? { list: {} }
       : name === 'uiWorkspace' && pkg.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-workspace') ? { openSession() {} }
+      : name === 'workspaces' ? { list: { subscribe: () => () => {} } }
       : undefined,
     effect: fn => fn(),
   });
@@ -73,6 +74,9 @@ test('Cordis waits for both session data and workspace navigation before applyin
   assert.equal(fiber.state, 0, 'Client also waits for the workspace navigation owner');
   assert.deepEqual(registered, []);
   ctx.provide('uiWorkspace', { openSession() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fiber.state, 0, 'Client also waits for workspace archive state');
+  ctx.provide('workspaces', { list: { subscribe: () => () => {} } });
   await fiber;
   assert.equal(fiber.state, 2);
   assert.deepEqual(registered, ['settings.section', 'conversation.chat.node', 'conversation.view']);
@@ -92,6 +96,7 @@ test('a user-renderer collision is reported while the other UI entries still reg
       },
     } : name === 'sessions' ? { list: {} }
       : name === 'uiWorkspace' ? { openSession() {} }
+      : name === 'workspaces' ? { list: { subscribe: () => () => {} } }
       : undefined,
     effect: fn => fn(),
   });

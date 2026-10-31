@@ -26,6 +26,7 @@ No matter how deeply conversations diverge or how many times prompts are edited,
 - **Keep the current model.** Edits and retries use the pending model selection, or the latest actual request when no selection is pending, including its reasoning effort. Rewinding no longer restores an older model choice.
 - **Version counter.** When a message has alternatives, `‹ n/m ›` appears beneath it. The arrows move between them instantaneously.
 - **Version tree.** A **Versions** tab lays the branches out as a graph you can pan, zoom and drag. The current path is highlighted; click any node to jump to that conversation.
+- **Archive branches.** Hover a branch card to archive that session and its descendants; running work is stopped and archived cards are hidden. Select **Show archived** to restore the whole branch. The original conversation cannot be archived from the graph.
 - **Zero-flicker instant switching.** Family-aware SWR client caching enables 0ms version switching and graph navigation without indicator flicker or loading delays.
 - **In-memory host caching.** Parsed turns and version metadata are cached in host memory, eliminating redundant disk I/O and JSON parsing for deep branching trees.
 - **Automatic cancellation.** Branching immediately cancels any still-streaming obsolete sibling turns across the conversation family to save tokens and compute.

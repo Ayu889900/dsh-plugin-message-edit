@@ -1,4 +1,5 @@
-import { attachParentId, ringFor, rootOf, ancestorChainFromLog, collectFamily, buildTurnTree } from '../lib/tree-logic.js';
+import { attachParentId, ringFor, rootOf, ancestorChainFromLog, collectFamily, buildTurnTree,
+  branchSessionIds, archivedBranchRoots } from '../lib/tree-logic.js';
 
 function node(id, parentSessionId, targetTurn) {
   return { sessionId: id, parentSessionId, targetTurn, createdAt: 0 };
@@ -288,6 +289,21 @@ check('turn 2 of A hangs off A#t1', tree2.find((n) => n.id === 'A#t2')?.parentId
 
 // Scenario 3: Empty versions
 check('empty versions produces empty tree', buildTurnTree([], 'A'), []);
+
+const archiveFamily = [
+  node('root', undefined, undefined),
+  { ...node('branch', 'root', 1), archived: true },
+  { ...node('leaf', 'branch', 2), archived: true },
+  { ...node('sibling', 'root', 1), archived: true },
+  { ...node('live-child', 'branch', 3), deleted: true },
+  node('survivor', 'live-child', 4),
+];
+check('branch archive covers surviving descendants child-first and skips deleted ghosts',
+  branchSessionIds(archiveFamily, 'branch'), ['leaf', 'survivor', 'branch']);
+check('archived roots expose one restore point per archived subtree',
+  archivedBranchRoots(archiveFamily).map((version) => version.sessionId), ['branch', 'sibling']);
+check('the original conversation is never offered as an archived branch restore root',
+  archivedBranchRoots([{ ...node('root', undefined, undefined), archived: true }]).map(v => v.sessionId), []);
 
 console.log(`
 ${failed === 0 ? 'all passed' : failed + ' failed'}`);

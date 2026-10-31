@@ -80,6 +80,7 @@ test(`native sidebar projection preserves capabilities: ${JSON.stringify(prefs)}
     inject: (name, cb) => injections.set(name, cb), onEntryError: () => () => {},
   };
   const services = { slots, sessions: { list: sessionSource }, uiWorkspace: { openSession() {} },
+    workspaces: { list: { subscribe: () => () => {} } },
     locale: { register() {}, bind: () => key => key } };
   runInNewContext(readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8'), sandbox);
   moduleValue.apply({ get: name => services[name], effect: fn => fn() });

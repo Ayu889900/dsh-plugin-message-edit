@@ -136,6 +136,35 @@ function rootOf(versions, sessionId) {
   return cursor.sessionId;
 }
 
+function branchSessionIds(versions, sessionId) {
+  const byId = new Map(versions.map(function (version) { return [version.sessionId, version]; }));
+  const children = new Map();
+  for (const version of versions) {
+    if (version.parentSessionId === undefined) continue;
+    const siblings = children.get(version.parentSessionId) || [];
+    siblings.push(version.sessionId);
+    children.set(version.parentSessionId, siblings);
+  }
+  const result = [];
+  const seen = new Set();
+  function visit(id) {
+    if (seen.has(id)) return;
+    seen.add(id);
+    for (const childId of children.get(id) || []) visit(childId);
+    if (byId.has(id) && !byId.get(id).deleted) result.push(id);
+  }
+  visit(sessionId);
+  return result;
+}
+
+function archivedBranchRoots(versions) {
+  const byId = new Map(versions.map(function (version) { return [version.sessionId, version]; }));
+  return versions.filter(function (version) {
+    return version.archived && version.parentSessionId !== undefined
+      && !byId.get(version.parentSessionId)?.archived;
+  });
+}
+
 // Families already restored in this page load. Without this the restore would
 // re-fire on every re-render and fight a deliberate walk back to the root.
 const restoredFamilies = new Set();
@@ -218,6 +247,7 @@ const treeStore = {
   bySession: new Map(),
   byRoot: new Map(),
   inflight: new Map(),
+  refreshAfterInflight: new Set(),
   listeners: [],
 
   get(sessionId) {
@@ -308,6 +338,7 @@ const treeStore = {
         self.notify();
       } finally {
         self.inflight.delete(sessionId);
+        if (self.refreshAfterInflight.delete(sessionId)) self.load(sessionId);
       }
     })();
 
@@ -331,6 +362,10 @@ const treeStore = {
       if (entry && entry.rootId) {
         const rootEntry = this.byRoot.get(entry.rootId);
         if (rootEntry) rootEntry.updatedAt = 0;
+      }
+      if (this.inflight.has(sessionId)) {
+        this.refreshAfterInflight.add(sessionId);
+        return;
       }
       this.load(sessionId);
     } else {
@@ -816,6 +851,11 @@ const CSS = [
   '.mtx-card[data-dragging]{cursor:grabbing;box-shadow:0 14px 34px rgba(0,0,0,.3);z-index:3}',
   '.mtx-card[data-deleted]{opacity:.55;border-style:dashed;cursor:default}',
   '.mtx-card[data-archived]{opacity:.72}',
+  '.mtx-card-has-action .mtx-card-main{padding-right:16px}',
+  '.mtx-card-action{position:absolute;top:4px;right:4px;z-index:2;width:22px;height:22px;padding:0;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font:inherit;line-height:20px;cursor:pointer;opacity:0;transition:opacity 120ms ease,background 120ms ease,color 120ms ease}',
+  '.mtx-card:hover .mtx-card-action,.mtx-card-action:focus-visible{opacity:1}',
+  '.mtx-card-action:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+  '@media(hover:none){.mtx-card-action{opacity:1}}',
   '.mtx-card[data-deleted]:hover{box-shadow:0 2px 10px rgba(0,0,0,.10);border-color:var(--dsw-alias-border-l2)}',
   '.mtx-card-icon{flex:none;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:12px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}',
   '.mtx-card[data-path] .mtx-card-icon{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4b8dff) 14%,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-state-business-primary,#4b8dff)}',
@@ -823,6 +863,8 @@ const CSS = [
   '.mtx-card-title{font-size:12.5px;font-weight:600;line-height:17px;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
   '.mtx-card-sub{font-size:11px;line-height:15px;margin-top:2px;color:var(--dsw-alias-label-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}',
   '.mtx-graph-tools{position:absolute;top:12px;right:14px;display:flex;gap:6px;z-index:4}',
+  '.mtx-archived-toggle{display:inline-flex;align-items:center;gap:5px;min-height:30px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}',
+  '.mtx-archived-toggle input{margin:0;accent-color:var(--dsw-alias-state-business-primary)}',
   '.mtx-tool{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border-radius:9px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:14px}',
   '.mtx-tool:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
   '.mtx-empty{position:absolute;left:0;right:0;bottom:26px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:12.5px;pointer-events:none}',
@@ -886,7 +928,7 @@ const CSS = [
 return {
   // Module dependencies load code; Cordis injection waits for its services.
   // The session controller becomes ready asynchronously after connection.
-  inject: ['slots', 'sessions', 'locale', 'uiWorkspace'],
+  inject: ['slots', 'sessions', 'locale', 'uiWorkspace', 'workspaces'],
   apply(ctx) {
     const slots = ctx.get('slots');
     if (slots === undefined) {
@@ -899,8 +941,12 @@ return {
 
     const sessions = ctx.get('sessions');
     const uiWorkspace = ctx.get('uiWorkspace');
+    const workspaces = ctx.get('workspaces');
     if (!sessions || !sessions.list || !uiWorkspace || typeof uiWorkspace.openSession !== 'function') {
       throw new Error('[dsh-plugin-message-edit] Missing DSH sessions or uiWorkspace navigation service. Check client dependencies and restart DSH.');
+    }
+    if (!workspaces || !workspaces.list || typeof workspaces.list.subscribe !== 'function') {
+      throw new Error('[dsh-plugin-message-edit] Missing DSH workspace state service. Check client dependencies and restart DSH.');
     }
     // DSH 0.2 keeps catalog data in sessions and navigation in uiWorkspace.
     const navigation = { list: sessions.list, openVersion: id => uiWorkspace.openSession(id) };
@@ -910,7 +956,6 @@ return {
         return sessions.list.subscribe(function () { treeStore.invalidate(); });
       }
     });
-
     // Session-list state straight from the service, so this works no matter
     // what props the host chooses to pass slot components.
     function useSessionList() {
@@ -1043,6 +1088,14 @@ return {
         styleDesc_claude: 'Retry, edit and copy under the bubble, revealed on hover. Cancel and Save sit below the editor.',
         deletedVersion: 'Deleted version',
         archivedTag: 'Archived',
+        archiveBranch: 'Archive this branch',
+        restoreBranch: 'Restore this branch',
+        showArchived: 'Show archived ({count})',
+        archiveBranchConfirm: 'Archive {count} conversations in this branch and its descendants? They can be restored later.',
+        restoreBranchConfirm: 'Restore {count} archived conversations in this branch and its descendants?',
+        archiveBranchFailed: 'The branch was only partly archived. Retry to finish: {error}',
+        restoreBranchFailed: 'The branch was only partly restored. Retry to finish: {error}',
+        archivedBranchesHidden: 'Archived branches are hidden. Use the checkbox above to show or restore them.',
         rememberPathLabel: 'Remember the version I was viewing',
         rememberPathHint: 'Reopening a conversation returns to the branch you last had open instead of the original. Off means it always opens the first version.',
         stopOnEditLabel: 'Stop the running reply when I edit',
@@ -1086,6 +1139,14 @@ return {
         styleDesc_claude: '气泡下方为重试、编辑与复制，悬停时显示；「取消 / 保存」位于编辑框下方。',
         deletedVersion: '已删除的版本',
         archivedTag: '已归档',
+        archiveBranch: '归档此分支',
+        restoreBranch: '恢复此分支',
+        showArchived: '显示归档（{count}）',
+        archiveBranchConfirm: '归档此分支及其后代，共 {count} 个会话？之后可以恢复。',
+        restoreBranchConfirm: '恢复此分支及其后代，共 {count} 个已归档会话？',
+        archiveBranchFailed: '分支只完成了部分归档，请重试以完成：{error}',
+        restoreBranchFailed: '分支只完成了部分恢复，请重试以完成：{error}',
+        archivedBranchesHidden: '已归档分支当前隐藏。使用上方复选框查看或恢复。',
         rememberPathLabel: '记住我正在查看的版本',
         rememberPathHint: '重新打开会话时回到上次查看的分支，而不是最初那条。关闭后始终打开第一个版本。',
         stopOnEditLabel: '编辑时中止正在生成的回复',
@@ -1129,6 +1190,14 @@ return {
         styleDesc_claude: 'Повторить, редактировать и копировать под пузырём, появляются при наведении. «Отмена» и «Сохранить» под редактором.',
         deletedVersion: 'Удалённая версия',
         archivedTag: 'В архиве',
+        archiveBranch: 'Архивировать ветку',
+        restoreBranch: 'Восстановить ветку',
+        showArchived: 'Показать архивные ({count})',
+        archiveBranchConfirm: 'Архивировать {count} бесед в этой ветке и её потомках? Их можно восстановить позже.',
+        restoreBranchConfirm: 'Восстановить {count} архивных бесед в этой ветке и её потомках?',
+        archiveBranchFailed: 'Ветка архивирована частично. Повторите попытку: {error}',
+        restoreBranchFailed: 'Ветка восстановлена частично. Повторите попытку: {error}',
+        archivedBranchesHidden: 'Архивные ветки скрыты. Используйте флажок выше, чтобы показать или восстановить их.',
         rememberPathLabel: 'Запоминать версию, которую я смотрел',
         rememberPathHint: 'При открытии разговора возвращаться к последней открытой ветке, а не к исходной. Выключено — всегда открывается первая версия.',
         stopOnEditLabel: 'Останавливать текущий ответ при редактировании',
@@ -1556,6 +1625,26 @@ return {
       const tree = useTree(sessionId);
       const titles = useSessionList().byId;
       const versions = (tree && tree.versions) || [];
+      const [showArchived, setShowArchived] = React.useState(false);
+      const [branchBusy, setBranchBusy] = React.useState(false);
+      const [branchError, setBranchError] = React.useState(null);
+      const branchBusyRef = React.useRef(false);
+      const versionById = React.useMemo(function () {
+        return new Map(versions.map(function (version) { return [version.sessionId, version]; }));
+      }, [versions]);
+      const archivedRoots = React.useMemo(function () { return archivedBranchRoots(versions); }, [versions]);
+      const archivedRootIds = React.useMemo(function () {
+        return new Set(archivedRoots.map(function (version) { return version.sessionId; }));
+      }, [archivedRoots]);
+      const visibleVersions = React.useMemo(function () {
+        return showArchived ? versions : versions.filter(function (version) { return !version.archived; });
+      }, [versions, showArchived]);
+
+      React.useEffect(function () {
+        return workspaces.list.subscribe(function () {
+          if (!branchBusyRef.current) treeStore.invalidate(sessionId);
+        });
+      }, [sessionId]);
 
       const graphRef = React.useRef(null);
       const worldRef = React.useRef(null);
@@ -1569,8 +1658,19 @@ return {
       const fittedRef = React.useRef(false);
 
       const turnNodes = React.useMemo(function () {
-        return buildTurnTree(versions, sessionId);
-      }, [versions, sessionId]);
+        return buildTurnTree(visibleVersions, sessionId);
+      }, [visibleVersions, sessionId]);
+
+      const actionNodeBySession = React.useMemo(function () {
+        const out = new Map();
+        for (const node of turnNodes) {
+          const version = versionById.get(node.sessionId);
+          if (!version || !version.parentSessionId || version.deleted) continue;
+          if (version.archived && (!showArchived || !archivedRootIds.has(version.sessionId))) continue;
+          if (!out.has(version.sessionId)) out.set(version.sessionId, node.id);
+        }
+        return out;
+      }, [turnNodes, versionById, showArchived, archivedRootIds]);
 
       const layoutKey = turnNodes.map(function (n) {
         return n.id + ':' + (n.parentId || '') + ':' + (n.onCurrentPath ? 1 : 0);
@@ -1712,10 +1812,55 @@ return {
         if (typeof node.turn === 'number' && node.turn > 0) flashTurn(node.sessionId, node.turn, 45);
       }
 
+      async function changeBranchArchive(branchId, restore) {
+        if (branchBusyRef.current) return;
+        const branchIds = branchSessionIds(versions, branchId);
+        const targets = restore
+          ? branchIds.slice().reverse().filter(function (id) { return versionById.get(id)?.archived; })
+          : branchIds.filter(function (id) { return !versionById.get(id)?.archived; });
+        if (targets.length === 0) return;
+        const g = realGlobal();
+        const prompt = t(restore ? 'restoreBranchConfirm' : 'archiveBranchConfirm', { count: targets.length });
+        if (g && typeof g.confirm === 'function' && !g.confirm(prompt)) return;
+
+        setBranchBusy(true);
+        branchBusyRef.current = true;
+        setBranchError(null);
+        try {
+          if (!restore && targets.includes(sessionId)) {
+            let ancestor = versionById.get(branchId);
+            let destination;
+            const seen = new Set();
+            while (ancestor?.parentSessionId && !seen.has(ancestor.sessionId)) {
+              seen.add(ancestor.sessionId);
+              ancestor = versionById.get(ancestor.parentSessionId);
+              if (ancestor && !ancestor.deleted && !ancestor.archived && !targets.includes(ancestor.sessionId)) {
+                destination = ancestor.sessionId;
+                break;
+              }
+            }
+            if (!destination) throw new Error('No active parent conversation is available.');
+            await uiWorkspace.openSession(destination);
+          }
+          for (const id of targets) {
+            if (restore) await uiWorkspace.unarchiveSession(id);
+            else await uiWorkspace.archiveSession(id, { stopActivity: true });
+          }
+        } catch (error) {
+          setBranchError(t(restore ? 'restoreBranchFailed' : 'archiveBranchFailed', {
+            error: String(error && error.message || error),
+          }));
+        } finally {
+          branchBusyRef.current = false;
+          treeStore.invalidate(sessionId);
+          setBranchBusy(false);
+        }
+      }
+
       function onPointerDown(ev) {
         if (ev.button !== 0) return;
         const cardEl = ev.target.closest ? ev.target.closest('.mtx-card') : null;
-        if (ev.target.closest && ev.target.closest('.mtx-tool,.mtx-link')) return;
+        if (ev.target.closest && ev.target.closest('.mtx-tool,.mtx-link,.mtx-card-action')) return;
         if (cardEl) {
           const id = cardEl.getAttribute('data-id');
           const s = springs.current.get(id);
@@ -1802,7 +1947,7 @@ return {
               + timeLabel(n.time);
             return React.createElement('div', {
               key: n.id,
-              className: 'mtx-card',
+              className: actionNodeBySession.get(n.sessionId) === n.id ? 'mtx-card mtx-card-has-action' : 'mtx-card',
               'data-id': n.id,
               'data-current': n.current || undefined,
               'data-path': n.onCurrentPath || undefined,
@@ -1811,6 +1956,19 @@ return {
               style: { transform: 'translate(' + (s.x - CARD_W / 2) + 'px,' + s.y + 'px)' },
               ref: function (el) { if (el) cardEls.current.set(n.id, el); else cardEls.current.delete(n.id); },
             },
+              actionNodeBySession.get(n.sessionId) === n.id ? React.createElement('button', {
+                type: 'button',
+                className: 'mtx-card-action',
+                'data-action': versionById.get(n.sessionId)?.archived ? 'restore-branch' : 'archive-branch',
+                title: t(versionById.get(n.sessionId)?.archived ? 'restoreBranch' : 'archiveBranch'),
+                'aria-label': t(versionById.get(n.sessionId)?.archived ? 'restoreBranch' : 'archiveBranch'),
+                disabled: branchBusy,
+                onPointerDown: function (event) { event.stopPropagation(); },
+                onClick: function (event) {
+                  event.stopPropagation();
+                  changeBranchArchive(n.sessionId, !!versionById.get(n.sessionId)?.archived);
+                },
+              }, versionById.get(n.sessionId)?.archived ? '↶' : '×') : null,
               React.createElement('span', { className: 'mtx-card-icon' },
                 n.deleted ? '∅' : n.isRoot ? '●' : (n.operation === 'retry' ? '↻' : (n.operation === 'edit' ? '✎' : '💬'))),
               React.createElement('span', { className: 'mtx-card-main' },
@@ -1821,6 +1979,13 @@ return {
           })
         ),
         React.createElement('div', { className: 'mtx-graph-tools' },
+          archivedRoots.length ? React.createElement('label', { className: 'mtx-archived-toggle' },
+            React.createElement('input', {
+              type: 'checkbox', checked: showArchived,
+              onChange: function (event) { setShowArchived(event.target.checked); },
+            }),
+            t('showArchived', { count: archivedRoots.length })
+          ) : null,
           React.createElement('button', {
             type: 'button', className: 'mtx-tool', title: t('fit'),
             onClick: function () { fitView(); },
@@ -1830,8 +1995,15 @@ return {
             onClick: function () { treeStore.load(sessionId); },
           }, '↻')
         ),
+        branchError ? React.createElement('div', { className: 'mtx-error' }, branchError) : null,
         tree && tree.error ? React.createElement('div', { className: 'mtx-error' }, tree.error) : null,
-        turnNodes.length <= 1 ? React.createElement('div', { className: 'mtx-empty' }, t('empty')) : null,
+        archivedRoots.length && !showArchived
+          && !visibleVersions.some(function (version) { return version.parentSessionId && !version.deleted; })
+          ? React.createElement('div', { className: 'mtx-empty' }, t('archivedBranchesHidden'))
+          : null,
+        turnNodes.length <= 1 && !archivedRoots.length
+          ? React.createElement('div', { className: 'mtx-empty' }, t('empty'))
+          : null,
         React.createElement('a', {
           className: 'mtx-link',
           href: 'https://github.com/SpookySandwich/dsh-plugin-message-edit',
