@@ -841,7 +841,7 @@ const CSS = [
   // edges. Cursor communicates state: grab on canvas, pointer on cards.
   '.mtx-graph{position:relative;height:100%;overflow:hidden;cursor:grab;background-image:radial-gradient(color-mix(in srgb,var(--dsw-alias-border-l2) 65%,transparent) 1px,transparent 1px);background-size:26px 26px;touch-action:none;user-select:none}',
   '.mtx-graph[data-panning]{cursor:grabbing}',
-  '.mtx-world{position:absolute;left:0;top:0;will-change:transform}',
+  '.mtx-world{position:absolute;left:0;top:0}',
   '.mtx-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}',
   '.mtx-edge{fill:none;stroke:var(--dsw-alias-border-l3);stroke-width:1.5}',
   '.mtx-edge[data-path]{stroke:var(--dsw-alias-accent-primary,#4b8dff);stroke-width:2}',
@@ -861,7 +861,7 @@ const CSS = [
   '.mtx-card[data-path] .mtx-card-icon{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4b8dff) 14%,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-state-business-primary,#4b8dff)}',
   '.mtx-card-main{min-width:0;flex:1}',
   '.mtx-card-title{font-size:12.5px;font-weight:600;line-height:17px;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-  '.mtx-card-sub{font-size:11px;line-height:15px;margin-top:2px;color:var(--dsw-alias-label-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}',
+  '.mtx-card-sub{font-size:11px;line-height:15px;margin:2px 0 0 -32px;width:calc(100% + 32px);color:var(--dsw-alias-label-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}',
   '.mtx-graph-tools{position:absolute;top:12px;right:14px;display:flex;gap:6px;z-index:4}',
   '.mtx-archived-toggle{display:inline-flex;align-items:center;gap:5px;min-height:30px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}',
   '.mtx-archived-toggle input{margin:0;accent-color:var(--dsw-alias-state-business-primary)}',
@@ -1679,15 +1679,15 @@ return {
       layoutRef.current = layout;
 
       function applyView() {
-        const el = worldRef.current;
-        const view = viewRef.current;
-        if (el) el.style.transform = 'translate(' + view.x + 'px,' + view.y + 'px) scale(' + view.scale + ')';
+        renderFrame();
       }
 
       function renderFrame() {
+        const view = viewRef.current;
         springs.current.forEach(function (s, id) {
           const el = cardEls.current.get(id);
-          if (el) el.style.transform = 'translate(' + (s.x - CARD_W / 2) + 'px,' + s.y + 'px)';
+          if (el) el.style.transform = 'translate(' + (view.x + (s.x - CARD_W / 2) * view.scale)
+            + 'px,' + (view.y + s.y * view.scale) + 'px)';
         });
         const lay = layoutRef.current;
         if (!lay) return;
@@ -1699,7 +1699,12 @@ return {
           if (!el || !a || !b) continue;
           const fromEl = cardEls.current.get(e.from);
           const h = fromEl ? fromEl.offsetHeight : 58;
-          el.setAttribute('d', edgePath(a.x, a.y + h, b.x, b.y));
+          el.setAttribute('d', edgePath(
+            view.x + a.x * view.scale,
+            view.y + a.y * view.scale + h,
+            view.x + b.x * view.scale,
+            view.y + b.y * view.scale,
+          ));
         }
       }
 
@@ -1933,7 +1938,12 @@ return {
                 key: key,
                 className: 'mtx-edge',
                 'data-path': e.onPath || undefined,
-                d: a && b ? edgePath(a.x, a.y + 58, b.x, b.y) : undefined,
+                d: a && b ? edgePath(
+                  viewRef.current.x + a.x * viewRef.current.scale,
+                  viewRef.current.y + a.y * viewRef.current.scale + 58,
+                  viewRef.current.x + b.x * viewRef.current.scale,
+                  viewRef.current.y + b.y * viewRef.current.scale,
+                ) : undefined,
                 ref: function (el) { if (el) edgeEls.current.set(key, el); else edgeEls.current.delete(key); },
               });
             })

@@ -172,3 +172,19 @@ test('archive changes from another client refresh the visible tree', async t => 
   assert.equal(doc.querySelector('[data-id="leaf#t2"]'), null);
   assert.match(doc.querySelector('.mtx-archived-toggle').textContent, /Show archived \(1\)/);
 });
+
+test('graph zoom moves cards and edges while keeping text at native CSS scale', async t => {
+  const { dom } = await mount(t);
+  const doc = dom.window.document;
+  const graph = doc.querySelector('.mtx-graph');
+  const card = doc.querySelector('[data-id="branch#t1"]');
+  const before = card.style.transform;
+  await act(async () => graph.dispatchEvent(new dom.window.WheelEvent('wheel', {
+    deltaY: -1000, clientX: 100, clientY: 100, cancelable: true,
+  })));
+  assert.notEqual(card.style.transform, before, 'Zoom updates the card screen position');
+  assert.doesNotMatch(card.style.transform, /scale\(/, 'Card text is never raster-scaled with the graph');
+  assert.match(doc.querySelector('style[data-plugin="dsh-plugin-message-edit"]').textContent,
+    /margin:2px 0 0 -32px;width:calc\(100% \+ 32px\)/);
+  assert.ok(doc.querySelector('.mtx-edge').getAttribute('d'), 'Edges are recomputed in screen coordinates');
+});
