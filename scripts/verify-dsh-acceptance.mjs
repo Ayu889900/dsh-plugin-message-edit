@@ -49,7 +49,13 @@ for (const id of ['session-qa-live', 'session-qa-cold']) {
   assert.deepEqual(edited.data.content.filter(block => block.type === 'image'), original.data.content.filter(block => block.type === 'image'));
   assert.equal(child.events.filter(isUser).length, 1);
   assert.equal(child.events.filter(event => event.type === 'turn/start').length, 1, 'The inherited inbox must not replay extra turns');
-  assert.equal(child.events[child.inheritedEventCount - 1].data.sessionId, child.header.id);
+  assert.ok(child.events.slice(0, child.inheritedEventCount).some(event =>
+    event.type === 'message-tree/version' && event.data.sessionId === child.header.id));
+  const selection = child.events[child.inheritedEventCount - 1];
+  assert.equal(selection.type, 'model/selection');
+  const requestConfig = child.events.findLast(event => event.type === 'request/header').data.header.config;
+  assert.equal(requestConfig.provider, selection.data.provider);
+  assert.equal(requestConfig.model, selection.data.model);
   assert.ok(child.events.findLast(event => event.type === 'assistant/message')?.data.message.content
     .some(block => block.text?.includes('Received 2 images')));
   const preserved = after.sessions.find(session => session.header.id === id).events;

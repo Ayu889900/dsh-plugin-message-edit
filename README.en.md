@@ -21,6 +21,9 @@ No matter how deeply conversations diverge or how many times prompts are edited,
 ## What it does
 
 - **Edit and branch.** Revise a past prompt and send: a new branch regenerates from the full context *before* that turn. This is a true rewind, not a fork that continues from the end.
+- **Edit images.** Remove existing images or add PNG, JPEG, WebP and GIF files while editing a message containing text. Kept images retain their references; new images use DSH's attachment service. The old branch is unchanged. Image-only messages are not editable yet.
+- **Group sidebar branches.** Settings → Message Tree → “Group branches in the conversation list” is enabled by default. Each conversation family occupies one row; the version counter and tree still navigate its branches. Disable it to manage branches individually in the sidebar.
+- **Keep the current model.** Edits and retries use the pending model selection, or the latest actual request when no selection is pending, including its reasoning effort. Rewinding no longer restores an older model choice.
 - **Version counter.** When a message has alternatives, `‹ n/m ›` appears beneath it. The arrows move between them instantaneously.
 - **Version tree.** A **Versions** tab lays the branches out as a graph you can pan, zoom and drag. The current path is highlighted; click any node to jump to that conversation.
 - **Zero-flicker instant switching.** Family-aware SWR client caching enables 0ms version switching and graph navigation without indicator flicker or loading delays.
@@ -58,6 +61,7 @@ DSH sessions are append-only event logs with no in-session branching, so a rewin
 - Those markers are read back to reconstruct the tree, the `‹ n/m ›` ring, and which branch you are currently on.
 - The marker is written with the envelope's `ignorable` flag. Plugin event types live outside the harness vocabulary, and without that flag the reader refuses to interpret the whole log — the session simply fails to open.
 - Only the plain `user` message node is shadowed, at priority `-1`. Reasoning, tool calls and steering rows keep the host renderer.
+- Sidebar grouping wraps the native component at runtime, preserving its injections, store, locale and child slots while projecting visible session IDs. Unloading restores the component; neither DSH source nor session data is modified. This relies on DSH's current sidebar slot structure.
 
 The host-side branching logic derives from [dsh-message-edit](https://github.com/Moeblack/dsh-message-edit) (MIT © Moeblack), reworked for ChatGPT-style rewind semantics, sibling fan-out, and the interface presets above.
 

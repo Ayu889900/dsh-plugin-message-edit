@@ -1,3 +1,4 @@
+import { sidebarEntries } from './fixtures/sidebar-entry.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
@@ -18,7 +19,7 @@ async function mount(t, content, renderMessageImages, options = {}) {
     url: 'https://message-edit.test/',
   });
   dom.window.localStorage.setItem('dsh-plugin-message-tree:style', options.style ?? 'chatgpt');
-  dom.window.fetch = async () => ({ ok: true, json: async () => ({ versions: options.versions ?? [] }) });
+  dom.window.fetch = options.fetch ?? (async () => ({ ok: true, json: async () => ({ versions: options.versions ?? [] }) }));
   const previous = new Map();
   const browserErrors = [];
   dom.window.addEventListener('error', event => browserErrors.push(event.error || event.message));
@@ -45,6 +46,7 @@ async function mount(t, content, renderMessageImages, options = {}) {
   });
   let component;
   const slots = {
+    entries: sidebarEntries,
     inject(_name, register) { register(); },
     register(spec, view) {
       if (spec.name === 'conversation.chat.node' && spec.key === 'user') component = view;
@@ -63,7 +65,7 @@ async function mount(t, content, renderMessageImages, options = {}) {
   };
   runInNewContext(bundle, {
     window: dom.window, document: dom.window.document, console,
-    setTimeout, clearTimeout,
+    setTimeout, clearTimeout, FileReader: dom.window.FileReader,
   }, { filename: 'lib/client.js' });
   plugin.apply({
     get(name) { return name === 'slots' ? slots : name === 'sessions' ? {
@@ -235,7 +237,8 @@ test('Russian native-factory fallback and edit/cancel preserve images and transl
   assert.match(doc.body.textContent, /Изображение недоступно/);
   assert.equal(doc.querySelector('[data-act="edit"]').title, 'Редактировать сообщение');
   await act(async () => doc.querySelector('[data-act="edit"]').click());
-  assert.equal(doc.querySelector('.mtx-img').textContent, 'Изображений сохранено как есть: 2');
+  assert.equal(doc.querySelector('.mtx-remove-image').title, 'Удалить изображение');
+  assert.match(doc.querySelector('.mtx-add-image').textContent, /Добавить изображения/);
   await act(async () => [...doc.querySelectorAll('button')].find(button => button.textContent === 'Отмена').click());
   assert.ok(doc.querySelector('.mtx-native-images img'));
 });
@@ -313,31 +316,63 @@ test('settling a load after unmount is harmless', async t => {
 });
 
 test('editing cancels an outstanding load and cancelling reloads images', async t => {
-  const pending = [deferred(), deferred()];
+  const pending = [deferred(), deferred(), deferred()];
   let calls = 0;
   const doc = await mount(t, [text('Edit'), photo('edit')], undefined, { props: { loadImage: () => pending[calls++].promise } });
   await act(async () => doc.querySelector('[data-act="edit"]').click());
   await act(async () => pending[0].resolve('/obsolete.png'));
   assert.equal(doc.querySelector('img'), null);
-  assert.match(doc.body.textContent, /1 image\(s\) kept as-is/);
+  assert.equal(doc.querySelectorAll('.mtx-remove-image').length, 1);
   await act(async () => [...doc.querySelectorAll('button')].find(button => button.textContent === 'Cancel').click());
-  await act(async () => pending[1].resolve('/restored.png'));
+  await act(async () => pending[2].resolve('/restored.png'));
   assert.equal(doc.querySelector('img').getAttribute('src'), '/restored.png');
 });
 
-test('editing keeps the attachment notice and cancelling restores the host gallery', async t => {
+test('editing offers image removal and cancelling restores the host gallery', async t => {
   const calls = [];
   const doc = await mount(t, [text('Describe this'), photo('one')], gallery(calls));
   assert.ok(doc.querySelector('img'));
   await act(async () => doc.querySelector('[data-act="edit"]').click());
   assert.equal(doc.querySelector('textarea')?.value, 'Describe this');
   assert.equal(doc.querySelector('img'), null);
-  assert.equal(doc.querySelector('.mtx-img')?.textContent, '1 image(s) kept as-is');
+  assert.equal(doc.querySelectorAll('.mtx-remove-image').length, 1);
   const cancel = [...doc.querySelectorAll('button')].find(button => button.textContent === 'Cancel');
   assert.ok(cancel);
   await act(async () => cancel.click());
   assert.equal(doc.querySelector('textarea'), null);
   assert.equal(doc.querySelector('img')?.alt, 'one');
+});
+
+test('editing submits removed images and newly selected files', async t => {
+  let submitted;
+  let submittedResolve;
+  const submittedPromise = new Promise(resolve => { submittedResolve = resolve; });
+  const doc = await mount(t, [text('Describe this'), photo('old'), photo('keep')], undefined, {
+    fetch: async (_url, init) => {
+      if (init?.method === 'POST') {
+        submitted = JSON.parse(init.body);
+        submittedResolve();
+        return { ok: true, json: async () => ({ sessionId: 'session-test' }) };
+      }
+      return { ok: true, json: async () => ({ versions: [] }) };
+    },
+  });
+  await act(async () => doc.querySelector('[data-act="edit"]').click());
+  await act(async () => doc.querySelector('.mtx-remove-image').click());
+  const input = doc.querySelector('input[type="file"]');
+  const file = new doc.defaultView.File(['test-image'], 'new.png', { type: 'image/png' });
+  Object.defineProperty(input, 'files', { value: [file] });
+  await act(async () => input.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true })));
+  assert.match(doc.querySelector('.mtx-new-image').textContent, /new.png/);
+  await act(async () => {
+    doc.querySelector('[data-primary]').click();
+    await submittedPromise;
+  });
+  assert.deepEqual(submitted.images, {
+    keepAttachmentIds: ['sha256:keep'],
+    uploads: [{ mediaType: 'image/png', data: Buffer.from('test-image').toString('base64'), name: 'new.png' }],
+  });
+  assert.equal(submitted.text, 'Describe this');
 });
 
   test('version navigation opens the selected sibling', async t => {

@@ -1,3 +1,4 @@
+import { sidebarEntries } from './fixtures/sidebar-entry.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
@@ -23,6 +24,7 @@ test('declared client dependencies make the UI services available for registrati
   // This loader double follows the relevant DSH dependency contract: services
   // are available only when their providing client module is injected.
   const slots = {
+    entries: sidebarEntries,
     inject: (_name, register) => register(),
     register: spec => { registered.push(spec.name); return () => {}; },
   };
@@ -57,6 +59,7 @@ test('Cordis waits for both session data and workspace navigation before applyin
   t.after(() => ctx.fiber.dispose());
   const registered = [];
   ctx.provide('slots', {
+    entries: sidebarEntries,
     inject: (_name, register) => register(),
     register: spec => { registered.push(spec.name); return () => {}; },
   });
@@ -80,6 +83,7 @@ test('a user-renderer collision is reported while the other UI entries still reg
   const registered = [];
   plugin.apply({
     get: name => name === 'slots' ? {
+      entries: sidebarEntries,
       inject: (_name, register) => register(),
       register(spec) {
         if (spec.name === 'conversation.chat.node') throw new Error('duplicate renderer');

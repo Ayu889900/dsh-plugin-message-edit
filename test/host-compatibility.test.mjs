@@ -5,7 +5,7 @@ import { apply } from '../lib/index.js';
 
 // Exercise the public HTTP route with both documented DSH session shapes.
 // Lifecycle/model execution is a double; real-runtime acceptance is separate.
-function harness(modern, resumed = false) {
+function harness(modern, resumed = false, attachments) {
   const records = new Map();
   const agents = new Map();
   const creations = [];
@@ -63,6 +63,7 @@ function harness(modern, resumed = false) {
       flush: async () => {},
     },
     sessionPersistence: {},
+    attachments,
     workspaceRegistry: {
       archivedSessionIds: [],
       list: () => [{ sessionIds: [...records.keys()], attachSession: async id => attached.push(id) }],
@@ -138,7 +139,7 @@ for (const modern of [false, true]) {
       assert.deepEqual(h.records.get('source').events, before, 'The original history remains unchanged');
       assert.equal(child.events.filter(event => event.type === 'user/message').length, 1);
       assert.equal(child.session.header.parentSession, 'source');
-      assert.equal(modern ? child.session.inheritedEventCount : child.session.header.seedLength, modern ? 2 : 1);
+      assert.equal(modern ? child.session.inheritedEventCount : child.session.header.seedLength, modern ? 3 : 1);
       assert.equal(child.events[1].type, 'message-tree/version');
       assert.equal(child.events[1].ignorable, true);
       assert.deepEqual(h.attached, [childId]);
@@ -208,6 +209,101 @@ test('invalid edit targets are rejected without creating a branch', async () => 
   const result = await h.request('POST', { action: 'edit', sessionId: 'source', eventSeq: 0, blockIndex: 0, text: 'bad' });
   assert.equal(result.status, 409);
   assert.equal(h.creations.length, 0);
+});
+
+for (const resumed of [false, true]) {
+  for (const action of ['edit', 'retry']) {
+    test(`${action} ${resumed ? 'resumed' : 'live'}: pending model and cleared effort survive rewind`, async () => {
+      const h = harness(true, resumed);
+      const root = h.records.get('source');
+      h.append(root, 'model/selection', { provider: 'new-provider', model: 'new-model' });
+      const result = await h.request('POST', {
+        action, sessionId: 'source', eventSeq: 2, blockIndex: 0, text: 'edited', turn: 1,
+      });
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      const created = h.creations.at(-1);
+      assert.deepEqual(created.agentOptions, { provider: 'new-provider', model: 'new-model' });
+      assert.deepEqual(created.seed.findLast(e => e.type === 'model/selection').data, created.agentOptions);
+    });
+  }
+}
+
+test('a consumed selection does not override a newer actual request', async () => {
+  const h = harness(true);
+  const root = h.records.get('source');
+  h.append(root, 'model/selection', { provider: 'qa', model: 'selected', reasoningEffort: 'high' });
+  h.append(root, 'request/header', { header: { config: { provider: 'qa', model: 'selected', reasoningEffort: 'high' } } });
+  h.append(root, 'request/header', { header: { config: { provider: 'qa', model: 'latest', maxTokens: 1024 } } });
+  const result = await h.request('POST', { action: 'retry', sessionId: 'source', turn: 1 });
+  assert.equal(result.status, 200);
+  assert.deepEqual(h.creations[0].agentOptions, { provider: 'qa', model: 'latest', maxTokens: 1024 });
+  assert.deepEqual(h.creations[0].seed.at(-1).data, { provider: 'qa', model: 'latest' });
+});
+
+test('an unrelated in-flight request does not consume a pending model change', async () => {
+  const h = harness(true);
+  const root = h.records.get('source');
+  h.append(root, 'model/selection', { provider: 'new-provider', model: 'new-model', reasoningEffort: 'low' });
+  h.append(root, 'request/header', { header: { config: { provider: 'qa', model: 'qa', maxTokens: 1234 } } });
+  const result = await h.request('POST', { action: 'retry', sessionId: 'source', turn: 1 });
+  assert.equal(result.status, 200);
+  assert.deepEqual(h.creations[0].agentOptions, { provider: 'new-provider', model: 'new-model', reasoningEffort: 'low' });
+});
+
+function imageStore() {
+  const calls = [];
+  return {
+    calls,
+    imageLimits: { maxImagesPerMessage: 3, maxMessageImageBytes: 64 },
+    async admitPromptContent(content) {
+      calls.push(structuredClone(content));
+      return content.map((part, index) => ({ type: 'image', attachment: {
+        attachmentId: `sha256:uploaded-${index}`, mediaType: part.mediaType,
+        bytes: Buffer.from(part.data, 'base64').length,
+      } }));
+    },
+  };
+}
+
+test('image edit removes selected images, preserves block order and admits uploads', async () => {
+  const attachments = imageStore();
+  const h = harness(true, false, attachments);
+  const source = h.records.get('source');
+  source.events[2].data.content.push({ type: 'text', text: 'suffix' },
+    { type: 'image', attachment: { attachmentId: 'sha256:remove', bytes: 2 } },
+    { type: 'file', attachment: { attachmentId: 'sha256:file' } });
+  const before = structuredClone(source.events);
+  const upload = { mediaType: 'image/png', data: 'AQID', name: 'new.png' };
+  const result = await h.request('POST', { action: 'edit', sessionId: 'source', eventSeq: 2,
+    blockIndex: 0, text: 'edited', images: { keepAttachmentIds: ['sha256:qa-image'], uploads: [upload] } });
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  const content = h.records.get(result.body.sessionId).events.findLast(e => e.type === 'user/message').data.content;
+  assert.deepEqual(content.slice(0, 4), [{ type: 'text', text: 'edited' }, before[2].data.content[1],
+    before[2].data.content[2], before[2].data.content[4]]);
+  assert.equal(content[4].attachment.attachmentId, 'sha256:uploaded-0');
+  assert.deepEqual(attachments.calls, [[{ type: 'image', ...upload }]]);
+  assert.deepEqual(source.events, before);
+});
+
+test('removing every image leaves the new branch text-only', async () => {
+  const h = harness(true, false, imageStore());
+  const result = await h.request('POST', { action: 'edit', sessionId: 'source', eventSeq: 2,
+    blockIndex: 0, text: 'edited', images: { keepAttachmentIds: [], uploads: [] } });
+  assert.equal(result.status, 200);
+  const content = h.records.get(result.body.sessionId).events.findLast(e => e.type === 'user/message').data.content;
+  assert.deepEqual(content, [{ type: 'text', text: 'edited' }]);
+});
+
+test('image batch limits include retained images and reject before branch creation', async () => {
+  const attachments = imageStore();
+  attachments.imageLimits.maxImagesPerMessage = 1;
+  const h = harness(true, false, attachments);
+  const result = await h.request('POST', { action: 'edit', sessionId: 'source', eventSeq: 2,
+    blockIndex: 0, text: 'edited', images: { keepAttachmentIds: ['sha256:qa-image'],
+      uploads: [{ mediaType: 'image/png', data: 'AQID' }] } });
+  assert.equal(result.status, 409);
+  assert.equal(h.creations.length, 0);
+  assert.equal(attachments.calls.length, 0);
 });
 
 test('activate unarchives through workspaceRegistry.unarchiveSession', async () => {

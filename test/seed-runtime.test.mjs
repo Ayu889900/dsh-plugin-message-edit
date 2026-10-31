@@ -55,7 +55,8 @@ test('real DSH 0.2.0-rc.2 constructor accepts a branch and setup clears rewound 
   assert.equal(status, 200, JSON.stringify(result));
   assert.equal(queued.content[0].text, 'Edited');
   assert.equal(child.snapshotEvents().filter(event => event.type === 'session/end-seed').length, 1);
-  assert.equal(child.snapshotEvents()[child.inheritedEventCount - 1].data.sessionId, child.id);
+  assert.equal(child.snapshotEvents().find(event => event.type === 'message-tree/version').data.sessionId, child.id);
+  assert.equal(child.snapshotEvents()[child.inheritedEventCount - 1].type, 'model/selection');
   assert.deepEqual(source.snapshotEvents(), before);
   const restored = Session.fromRestore(child.id, structuredClone(child.snapshotEvents()), child.header, child.inheritedEventCount, 'owned');
   assert.equal(restored.inheritedEventCount, child.inheritedEventCount);

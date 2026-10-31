@@ -1,3 +1,4 @@
+import { sidebarEntries } from './fixtures/sidebar-entry.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
@@ -22,6 +23,7 @@ function apply(locale) {
   });
   plugin.apply({
     get: name => ({ locale, slots: {
+      entries: sidebarEntries,
       inject: (_name, fn) => fn(),
       register: spec => { specs.push(spec); return () => {}; },
     }, sessions: { list: {} }, uiWorkspace: { openSession() {} } })[name],
@@ -31,11 +33,11 @@ function apply(locale) {
   return { dictionaries, specs, dispose() { disposers.reverse().forEach(fn => fn()); } };
 }
 
-test('all 37 locale keys and placeholder multisets match the English dictionary', () => {
+test('all locale keys and placeholder multisets match the English dictionary', () => {
   const { dictionaries, dispose } = apply(createLocale());
   try {
     const keys = Object.keys(dictionaries.en).sort();
-    assert.equal(keys.length, 37);
+    assert.equal(keys.length, 41);
     const tokens = value => [...value.matchAll(/\{(\w+)\}/g)].map(match => match[1]).sort();
     for (const language of ['ru', 'zh']) {
       assert.deepEqual(Object.keys(dictionaries[language]).sort(), keys);

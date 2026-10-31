@@ -145,14 +145,15 @@ const pendingRestore = new Set();
 
 /* --------------------------------------------------------------- prefs -- */
 
-// Behaviour toggles, persisted next to the style choice. Both default to the
-// behaviour the user asked for rather than the old one.
+// Behaviour toggles, persisted next to the style choice.
 const PREFS_KEY = 'dsh-plugin-message-tree:prefs';
 const PREFS_DEFAULTS = {
   // Restore the last-viewed branch when reopening a conversation.
   rememberPath: true,
   // Cancel a still-running turn before an edit forks the conversation.
   stopOnEdit: true,
+  // Keep each message-tree family to one row in the workspace sidebar.
+  collapseBranches: true,
 };
 
 const prefsStore = {
@@ -483,6 +484,24 @@ function imageParts(content) {
     if (block && block.type === 'image' && block.attachment) out.push({ attachment: block.attachment });
   }
   return out;
+}
+
+function encodeImageFile(file) {
+  return new Promise(function (resolve, reject) {
+    const reader = new FileReader();
+    reader.onload = function () {
+      const value = String(reader.result || '');
+      const comma = value.indexOf(',');
+      if (comma < 0) return reject(new Error('Could not read the selected image.'));
+      resolve({
+        mediaType: file.type,
+        data: value.slice(comma + 1),
+        ...(file.name ? { name: file.name } : {}),
+      });
+    };
+    reader.onerror = function () { reject(reader.error || new Error('Could not read the selected image.')); };
+    reader.readAsDataURL(file);
+  });
 }
 
 function clip(text, max) {
@@ -853,6 +872,15 @@ const CSS = [
   '.mtx-preview .mtx-actions{opacity:1!important}',
   '.mtx-set-link{align-self:flex-end;font-size:12px;color:var(--dsw-alias-label-tertiary);text-decoration:none;pointer-events:auto}',
   '.mtx-set-link:hover{color:var(--dsw-alias-label-primary)}',
+  '.mtx-edit-images{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}',
+  '.mtx-edit-image{position:relative;display:flex;align-items:center;gap:4px;max-width:180px}',
+  '.mtx-edit-image .mtx-thumb{width:64px;height:48px}',
+  '.mtx-new-image{min-height:32px;padding:0 24px 0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px}',
+  '.mtx-new-image-name{max-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--dsw-alias-label-secondary)}',
+  '.mtx-remove-image{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border:0;border-radius:50%;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-primary);cursor:pointer}',
+  '.mtx-add-image{display:inline-flex;align-items:center;min-height:28px;padding:0 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}',
+  '.mtx-add-image:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+  '.mtx-add-image input{display:none}',
 ].join('');
 
 return {
@@ -864,6 +892,7 @@ return {
     if (slots === undefined) {
       throw new Error('[dsh-plugin-message-edit] Missing DSH slots service. Check dsh.client.inject and restart DSH.');
     }
+    let nativeSidebarComponent;
     ctx.effect(function () { return styles.insert(CSS); });
     // Reflect the chosen edit style onto <html> now and on every change.
     ctx.effect(function () { syncStyleAttribute(); return styleStore.subscribe(syncStyleAttribute); });
@@ -895,6 +924,88 @@ return {
         : { byId: {} };
     }
 
+    function familyRoot(list, sessionId) {
+      const seen = new Set();
+      let current = list.byId[sessionId];
+      while (current && (current.parentId || current.parentSessionId) && !seen.has(current.id)) {
+        seen.add(current.id);
+        const parentId = current.parentId || current.parentSessionId;
+        const parent = list.byId[parentId];
+        if (!parent) break;
+        current = parent;
+      }
+      return current && current.id;
+    }
+
+    function collapseSessionList(list, preferredId, archivedIds, rememberPath) {
+      const idsByRoot = new Map();
+      const visible = new Set();
+      for (const id of list.ids) {
+        if (archivedIds.has(id) || list.byId[id]?.origin === 'subagent') {
+          visible.add(id);
+          continue;
+        }
+        const root = familyRoot(list, id);
+        if (!root) continue;
+        const ids = idsByRoot.get(root) || [];
+        ids.push(id);
+        idsByRoot.set(root, ids);
+      }
+      for (const [root, ids] of idsByRoot) {
+        const selected = ids.find((id) => id === preferredId)
+          || ids.find((id) => (list.byId[id]?.retainedBy?.mainView ?? 0) > 0)
+          || (rememberPath && ids.find((id) => id === activePathStore.get(root)))
+          || (ids.includes(root) ? root : ids[0]);
+        visible.add(selected);
+      }
+      return { ...list, ids: list.ids.filter((id) => visible.has(id)) };
+    }
+
+    function BranchSidebar(props) {
+      const prefs = usePrefs();
+      const list = props.useSessions((state) => state);
+      const workspaces = props.useWorkspaces((state) => state);
+      const preferredId = Object.values(list.byId).find((session) => (session.retainedBy?.mainView ?? 0) > 0)?.id;
+      const projection = React.useMemo(() => {
+        if (!prefs.collapseBranches) return { list, workspaces };
+        const projectedList = collapseSessionList(list, preferredId, new Set(workspaces.archivedSessionIds), prefs.rememberPath);
+        const visible = new Set(projectedList.ids);
+        return {
+          list: projectedList,
+          workspaces: {
+            ...workspaces,
+            items: workspaces.items.map((workspace) => ({
+              ...workspace,
+              sessionIds: workspace.sessionIds.filter((id) => visible.has(id)),
+            })),
+          },
+        };
+      }, [list, workspaces, preferredId, prefs.collapseBranches, prefs.rememberPath]);
+      const useProjectedSessions = (selector) => props.useSessions(() => selector(projection.list));
+      const useProjectedWorkspaces = (selector) => props.useWorkspaces(() => selector(projection.workspaces));
+      return React.createElement(nativeSidebarComponent, {
+        ...props,
+        useSessions: useProjectedSessions,
+        useWorkspaces: useProjectedWorkspaces,
+      });
+    }
+
+    // Wait for a child owned by the native sidebar: its parent registration is
+    // then complete. Decorate that registration's component in memory so DSH
+    // still assembles its original inject/store/locale/child-slot props.
+    // A separate shadow registration does NOT inherit those capabilities.
+    slots.inject('sidebar.workspaces.session.row.action', function () {
+      const entry = slots.entries('sidebar.workspaces').find((candidate) =>
+        candidate.children?.['sidebar.workspaces.session.row.action']);
+      if (!entry) throw new Error('Native workspace sidebar registration not found');
+      const originalComponent = entry.component;
+      nativeSidebarComponent = originalComponent;
+      entry.component = BranchSidebar;
+      return function () {
+        if (entry.component === BranchSidebar) entry.component = originalComponent;
+      };
+    });
+
     const I18N_NS = 'dsh-plugin-message-tree';
     const I18N = {
       en: {
@@ -916,6 +1027,8 @@ return {
         fit: 'Center view',
         empty: 'No versions yet — edit any of your messages to branch this conversation. Drag to pan, scroll to zoom.',
         images: '{count} image(s) kept as-is',
+        imageAdd: 'Add images',
+        imageRemove: 'Remove image',
         imageLoading: 'Loading image…',
         imageUnavailable: 'Image unavailable',
         imageOpen: 'Open image',
@@ -934,6 +1047,8 @@ return {
         rememberPathHint: 'Reopening a conversation returns to the branch you last had open instead of the original. Off means it always opens the first version.',
         stopOnEditLabel: 'Stop the running reply when I edit',
         stopOnEditHint: 'Editing or retrying cancels every reply still being generated in this conversation before branching, including other versions, so no superseded answer keeps spending tokens. This also lets you edit mid-reply. Off leaves them running.',
+        collapseBranchesLabel: 'Group branches in the conversation list',
+        collapseBranchesHint: 'Show one row per conversation family. The version view still contains every branch; turn this off to manage each branch from the sidebar.',
         previewUser: 'Rewrite this paragraph to be more concise.',
       },
       zh: {
@@ -955,6 +1070,8 @@ return {
         fit: '居中显示',
         empty: '还没有版本——编辑任意一条你的消息即可创建分支。拖动平移，滚轮缩放。',
         images: '{count} 张图片将原样保留',
+        imageAdd: '添加图片',
+        imageRemove: '移除图片',
         imageLoading: '图片加载中…',
         imageUnavailable: '图片不可用',
         imageOpen: '打开图片',
@@ -973,6 +1090,8 @@ return {
         rememberPathHint: '重新打开会话时回到上次查看的分支，而不是最初那条。关闭后始终打开第一个版本。',
         stopOnEditLabel: '编辑时中止正在生成的回复',
         stopOnEditHint: '编辑或重试时，先取消该会话中所有仍在生成的回复（包括其它版本）再分支，避免被取代的回答继续消耗额度；同时允许在回复过程中直接编辑。关闭后它们会继续跑完。',
+        collapseBranchesLabel: '在会话列表中合并分支',
+        collapseBranchesHint: '每组分支只显示一条会话；「版本」视图仍可访问所有分支。关闭此项可在侧栏逐条管理分支。',
         previewUser: '把这段话改写得更简洁一些。',
       },
       ru: {
@@ -994,6 +1113,8 @@ return {
         fit: 'По центру',
         empty: 'Версий пока нет — отредактируйте любое своё сообщение, чтобы создать ветку. Тяните для панорамы, колесо — масштаб.',
         images: 'Изображений сохранено как есть: {count}',
+        imageAdd: 'Добавить изображения',
+        imageRemove: 'Удалить изображение',
         imageLoading: 'Загрузка изображения…',
         imageUnavailable: 'Изображение недоступно',
         imageOpen: 'Открыть изображение',
@@ -1012,6 +1133,8 @@ return {
         rememberPathHint: 'При открытии разговора возвращаться к последней открытой ветке, а не к исходной. Выключено — всегда открывается первая версия.',
         stopOnEditLabel: 'Останавливать текущий ответ при редактировании',
         stopOnEditHint: 'При редактировании или повторе отменить все ещё генерирующиеся ответы в этом разговоре, включая другие версии, прежде чем создавать ветку. Это же позволяет редактировать во время ответа. Выключено — они продолжают генерироваться.',
+        collapseBranchesLabel: 'Объединять ветки в списке разговоров',
+        collapseBranchesHint: 'Одна строка на семейство разговоров. Все ветки доступны во вкладке «Версии». Отключите для управления каждой веткой в боковой панели.',
         previewUser: 'Перепиши этот абзац короче.',
       },
     };
@@ -1213,6 +1336,8 @@ return {
 
       const [editing, setEditing] = React.useState(false);
       const [draft, setDraft] = React.useState('');
+      const [keptImages, setKeptImages] = React.useState([]);
+      const [addedImages, setAddedImages] = React.useState([]);
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState(null);
       const [copied, setCopied] = React.useState(false);
@@ -1226,6 +1351,8 @@ return {
 
       function beginEdit() {
         setDraft(text);
+        setKeptImages(messageImages.map(function (part) { return part.attachment; }));
+        setAddedImages([]);
         setError(null);
         setEditing(true);
       }
@@ -1237,12 +1364,17 @@ return {
         setBusy(true);
         setError(null);
         try {
+          const uploads = await Promise.all(addedImages.map(encodeImageFile));
           const result = await mutate({
             action: 'edit',
             sessionId: sessionId,
             eventSeq: data.seq,
             blockIndex: blockIndex,
             text: draft,
+            ...(uploads.length || keptImages.length !== messageImages.length) ? { images: {
+              keepAttachmentIds: keptImages.map(function (image) { return image.attachmentId; }),
+              uploads,
+            } } : {},
             stopPrevious: prefs.stopOnEdit,
           });
           const currentTree = treeStore.get(sessionId);
@@ -1325,6 +1457,37 @@ return {
             onClick: submit,
           }, label);
         };
+        const imageControls = React.createElement('div', { className: 'mtx-edit-images' },
+          keptImages.map(function (attachment, index) {
+            return React.createElement('div', { className: 'mtx-edit-image', key: 'kept-' + attachment.attachmentId },
+              React.createElement(ImageThumb, { attachment, loadImage: props.loadImage }),
+              React.createElement('button', {
+                type: 'button', className: 'mtx-remove-image', title: t('imageRemove'), disabled: busy,
+                onClick: function () { setKeptImages(function (items) { return items.filter((_, i) => i !== index); }); },
+              }, '×')
+            );
+          }),
+          addedImages.map(function (file, index) {
+            return React.createElement('div', { className: 'mtx-edit-image mtx-new-image', key: 'new-' + index },
+              React.createElement('span', { className: 'mtx-new-image-name', title: file.name }, file.name),
+              React.createElement('button', {
+                type: 'button', className: 'mtx-remove-image', title: t('imageRemove'), disabled: busy,
+                onClick: function () { setAddedImages(function (items) { return items.filter((_, i) => i !== index); }); },
+              }, '×')
+            );
+          }),
+          React.createElement('label', { className: 'mtx-add-image' },
+            t('imageAdd'),
+            React.createElement('input', {
+              type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', multiple: true,
+              disabled: busy, onChange: function (event) {
+                const files = Array.from(event.target.files || []);
+                setAddedImages(function (items) { return items.concat(files); });
+                event.target.value = '';
+              },
+            })
+          )
+        );
         return React.createElement('div', { className: 'mtx-row' },
           React.createElement('div', { className: 'mtx-editor' },
             React.createElement('textarea', {
@@ -1337,7 +1500,7 @@ return {
                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit();
               },
             }),
-            images > 0 ? React.createElement('div', { className: 'mtx-img' }, t('images', { count: images })) : null,
+            imageControls,
             error ? React.createElement('div', { className: 'mtx-error' }, error) : null,
             React.createElement('div', { className: 'mtx-editor-actions' },
               cancelButton('c-in'), confirmButton('s-in', t('send'))
@@ -1718,6 +1881,12 @@ return {
           hint: t('stopOnEditHint'),
           checked: prefs.stopOnEdit,
           onChange: function (e) { prefsStore.set({ stopOnEdit: e.target.checked }); },
+        }),
+        React.createElement(Toggle, {
+          label: t('collapseBranchesLabel'),
+          hint: t('collapseBranchesHint'),
+          checked: prefs.collapseBranches,
+          onChange: function (e) { prefsStore.set({ collapseBranches: e.target.checked }); },
         }),
         React.createElement('div', { className: 'mtx-preview' },
           React.createElement('div', { className: 'mtx-row' },
