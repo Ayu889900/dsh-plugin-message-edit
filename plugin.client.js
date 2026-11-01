@@ -841,7 +841,7 @@ const CSS = [
   // edges. Cursor communicates state: grab on canvas, pointer on cards.
   '.mtx-graph{position:relative;height:100%;overflow:hidden;cursor:grab;background-image:radial-gradient(color-mix(in srgb,var(--dsw-alias-border-l2) 65%,transparent) 1px,transparent 1px);background-size:26px 26px;touch-action:none;user-select:none}',
   '.mtx-graph[data-panning]{cursor:grabbing}',
-  '.mtx-world{position:absolute;left:0;top:0}',
+  '.mtx-world{position:absolute;left:0;top:0;will-change:transform}',
   '.mtx-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}',
   '.mtx-edge{fill:none;stroke:var(--dsw-alias-border-l3);stroke-width:1.5}',
   '.mtx-edge[data-path]{stroke:var(--dsw-alias-accent-primary,#4b8dff);stroke-width:2}',
@@ -1679,15 +1679,15 @@ return {
       layoutRef.current = layout;
 
       function applyView() {
-        renderFrame();
+        const el = worldRef.current;
+        const view = viewRef.current;
+        if (el) el.style.transform = 'translate(' + view.x + 'px,' + view.y + 'px) scale(' + view.scale + ')';
       }
 
       function renderFrame() {
-        const view = viewRef.current;
         springs.current.forEach(function (s, id) {
           const el = cardEls.current.get(id);
-          if (el) el.style.transform = 'translate(' + (view.x + (s.x - CARD_W / 2) * view.scale)
-            + 'px,' + (view.y + s.y * view.scale) + 'px)';
+          if (el) el.style.transform = 'translate(' + (s.x - CARD_W / 2) + 'px,' + s.y + 'px)';
         });
         const lay = layoutRef.current;
         if (!lay) return;
@@ -1699,12 +1699,7 @@ return {
           if (!el || !a || !b) continue;
           const fromEl = cardEls.current.get(e.from);
           const h = fromEl ? fromEl.offsetHeight : 58;
-          el.setAttribute('d', edgePath(
-            view.x + a.x * view.scale,
-            view.y + a.y * view.scale + h,
-            view.x + b.x * view.scale,
-            view.y + b.y * view.scale,
-          ));
+          el.setAttribute('d', edgePath(a.x, a.y + h, b.x, b.y));
         }
       }
 
@@ -1938,12 +1933,7 @@ return {
                 key: key,
                 className: 'mtx-edge',
                 'data-path': e.onPath || undefined,
-                d: a && b ? edgePath(
-                  viewRef.current.x + a.x * viewRef.current.scale,
-                  viewRef.current.y + a.y * viewRef.current.scale + 58,
-                  viewRef.current.x + b.x * viewRef.current.scale,
-                  viewRef.current.y + b.y * viewRef.current.scale,
-                ) : undefined,
+                d: a && b ? edgePath(a.x, a.y + 58, b.x, b.y) : undefined,
                 ref: function (el) { if (el) edgeEls.current.set(key, el); else edgeEls.current.delete(key); },
               });
             })
