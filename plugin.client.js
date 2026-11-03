@@ -563,7 +563,7 @@ const SLOT_Y = 132;
 /**
  * Project conversation family versions into a turn-level branching tree.
  */
-function buildTurnTree(versions, currentSessionId) {
+function buildTurnTree(versions, currentSessionId, showArchived = true) {
   if (!versions || versions.length === 0) return [];
   const byId = new Map(versions.map(function (v) { return [v.sessionId, v]; }));
 
@@ -583,7 +583,7 @@ function buildTurnTree(versions, currentSessionId) {
     cursor = cursor.parentSessionId ? byId.get(cursor.parentSessionId) : null;
   }
 
-  const nodes = [];
+  let nodes = [];
   const rootNodeId = rootSessionId + '#root';
   const nodeMap = new Map();
 
@@ -602,15 +602,19 @@ function buildTurnTree(versions, currentSessionId) {
   nodeMap.set(rootNodeId, rootNode);
 
   function findParentTurnNodeId(v, turn) {
-    if (!v.parentSessionId) {
-      if (turn === 1) return rootNodeId;
-      return v.sessionId + '#t' + (turn - 1);
+    const previousTurn = turn - 1;
+    if (previousTurn < 1) return rootNodeId;
+    // Follow inherited turns to the ancestor that actually renders the card.
+    let owner = v;
+    const seen = new Set();
+    while (owner.parentSessionId && previousTurn < (owner.targetTurn ?? 1)) {
+      if (seen.has(owner.sessionId)) return rootNodeId;
+      seen.add(owner.sessionId);
+      const parent = byId.get(owner.parentSessionId);
+      if (!parent) return rootNodeId;
+      owner = parent;
     }
-    if (turn === v.targetTurn) {
-      if (v.targetTurn === 1) return rootNodeId;
-      return v.parentSessionId + '#t' + (v.targetTurn - 1);
-    }
-    return v.sessionId + '#t' + (turn - 1);
+    return owner.sessionId + '#t' + previousTurn;
   }
 
   for (let i = 0; i < versions.length; i++) {
@@ -692,6 +696,20 @@ function buildTurnTree(versions, currentSessionId) {
   for (let i = 0; i < nodes.length; i++) {
     if (nodes[i].parentId && !allIds.has(nodes[i].parentId)) {
       nodes[i].parentId = rootNodeId;
+    }
+  }
+
+  // Keep full ancestry available until connections are resolved, then hide cards.
+  if (!showArchived) {
+    nodes = nodes.filter(function (n) { return n.isRoot || !n.archived; });
+    for (const n of nodes) {
+      let parent = nodeMap.get(n.parentId);
+      const seen = new Set();
+      while (parent?.archived && !parent.isRoot && !seen.has(parent.id)) {
+        seen.add(parent.id);
+        n.parentId = parent.parentId;
+        parent = nodeMap.get(n.parentId);
+      }
     }
   }
 
@@ -1658,8 +1676,8 @@ return {
       const fittedRef = React.useRef(false);
 
       const turnNodes = React.useMemo(function () {
-        return buildTurnTree(visibleVersions, sessionId);
-      }, [visibleVersions, sessionId]);
+        return buildTurnTree(versions, sessionId, showArchived);
+      }, [versions, sessionId, showArchived]);
 
       const actionNodeBySession = React.useMemo(function () {
         const out = new Map();
